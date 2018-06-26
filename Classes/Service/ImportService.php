@@ -30,6 +30,15 @@ class ImportService
     const SUPPORTED_FORMAT_VERSION = '1.0';
 
     /**
+     * @var array
+     */
+    const DEFAULT_CONTEXT_SETTINGS = [
+        'invisibleContentShown' => true,
+        'removedContentShown' => false,
+        'inaccessibleContentShown' => false
+    ];
+
+    /**
      * @Flow\InjectConfiguration(path = "languageDimension")
      * @var string
      */
@@ -197,14 +206,11 @@ class ImportService
                 $this->persistenceManager->persistAll();
             }
 
-            $this->contentContext = $this->contentContextFactory->create([
+            $this->contentContext = $this->contentContextFactory->create(array_merge(self::DEFAULT_CONTEXT_SETTINGS, [
                 'workspaceName' => $sourceWorkspaceName,
                 'dimensions' => [],
                 'targetDimensions' => [],
-                'invisibleContentShown' => false,
-                'removedContentShown' => false,
-                'inaccessibleContentShown' => false
-            ]);
+            ]));
 
             $this->securityContext->withoutAuthorizationChecks(function () use ($xmlReader) {
                 $this->importNodes($xmlReader);
@@ -381,21 +387,30 @@ class ImportService
             return;
         }
 
-        /** @var \TYPO3\TYPO3CR\Domain\Model\NodeInterface $currentNodeVariant */
-        $currentNodeVariant = array_reduce($this->currentNodeVariants, function ($carry, \TYPO3\TYPO3CR\Domain\Model\NodeInterface $nodeVariant) use ($translatedData) {
+        $dimensionsToMatch = array_merge($translatedData['dimensionValues'], [$this->languageDimension => [$this->targetLanguage]]);
+        $nodeVariants = array_reduce($this->currentNodeVariants, function ($carry, \TYPO3\TYPO3CR\Domain\Model\NodeInterface $nodeVariant) use ($translatedData, $dimensionsToMatch) {
             // best match
-            $dimensionsToMatch = array_merge($translatedData['dimensionValues'], [$this->languageDimension => [$this->targetLanguage]]);
             if ($nodeVariant->getDimensions() === $dimensionsToMatch) {
-                return $nodeVariant;
+                array_unshift($carry, $nodeVariant);
+
+                return $carry;
             }
 
             // next best match
             if ($nodeVariant->getDimensions() === $translatedData['dimensionValues']) {
-                return $nodeVariant;
+                $carry[] = $nodeVariant;
+
+                return $carry;
             }
 
             return $carry;
-        });
+        }, []);
+        /** @var \TYPO3\TYPO3CR\Domain\Model\NodeInterface $currentNodeVariant */
+        $currentNodeVariant = current($nodeVariants);
+
+        if ($currentNodeVariant === null) {
+            return;
+        }
 
         $dimensions = array_merge($translatedData['dimensionValues'], [$this->languageDimension => $this->languageDimensionPreset['values']]);
         $targetDimensions = array_map(
@@ -406,22 +421,15 @@ class ImportService
         );
         $targetDimensions = array_merge($targetDimensions, [$this->languageDimension => $this->targetLanguage]);
 
-        $targetContentContext = $this->contentContextFactory->create([
+        $targetContentContext = $this->contentContextFactory->create(array_merge(self::DEFAULT_CONTEXT_SETTINGS, [
             'workspaceName' => $this->targetWorkspace->getName(),
             'dimensions' => $dimensions,
             'targetDimensions' => $targetDimensions
-        ]);
+        ]));
 
-        if ($currentNodeVariant === null) {
-            return;
-        }
-
-        $propertiesToSet = [];
-        foreach ($translatedData['properties'] as $key => $value) {
-            if ($currentNodeVariant->getProperty($key) !== $value) {
-                $propertiesToSet[$key] = $value;
-            }
-        }
+        $propertiesToSet = array_filter($translatedData['properties'], function($propertyValue, $propertyName) use ($currentNodeVariant) {
+            return $currentNodeVariant->getProperty($propertyName) !== $propertyValue;
+        }, ARRAY_FILTER_USE_BOTH);
 
         // don't adopt node if no properties have changed and there is a fallback in place
         if ($propertiesToSet === [] && count($targetContentContext->getDimensions()[$this->languageDimension]) > 1) {
