@@ -408,7 +408,7 @@ class ImportService
         /** @var \TYPO3\TYPO3CR\Domain\Model\NodeInterface $currentNodeVariant */
         $currentNodeVariant = current($nodeVariants);
 
-        if ($currentNodeVariant === null) {
+        if (!$currentNodeVariant instanceof \TYPO3\TYPO3CR\Domain\Model\NodeInterface) {
             return;
         }
 
